@@ -250,7 +250,13 @@ def test_cov_loss_detects_correlation_and_whitening_removes_it():
     m = _model()
     torch.manual_seed(9)
     a = torch.randn(512)
-    z = torch.stack([a, 2 * a, a + torch.randn(512) * 0.1, torch.randn(512)], dim=1)
+    # A hair of noise on the doubled column: exact collinearity makes the
+    # sample covariance singular, and whether Cholesky tolerates that then
+    # depends on last-bit rounding that differs across LAPACK builds (seen
+    # failing on the B200 pod). Correlation stays ~0.9999, but the matrix is
+    # strictly positive-definite on every platform.
+    z = torch.stack([a, 2 * a + torch.randn(512) * 0.01,
+                     a + torch.randn(512) * 0.1, torch.randn(512)], dim=1)
     assert m.vcreg_cov_loss(z).item() > 1.0, "strongly correlated dims must pay"
     assert m.vcreg_cov_loss(_whiten(z)).item() == pytest.approx(0.0, abs=1e-6)
 
