@@ -33,14 +33,16 @@ def fmt_coeff(value) -> str:
 
 
 def variant_tag(sigreg, sigreg_coeff, freeze_backbone, curv_on,
-                ground_proprio=0.0, cf_curv=0.0, act_sens=0.0) -> str:
+                ground_proprio=0.0, cf_curv=0.0, act_sens=0.0,
+                vcreg=False, vcreg_std_coeff=0.0, vcreg_cov_coeff=0.0) -> str:
     """Suffix describing the objective/trainability variant.
 
     `ground_proprio` MUST appear here. Without it a grounded run resolves to the
     same directory as the ungrounded one, and train.py auto-resumes from
     model_latest.pth -- so the fix would silently continue (and overwrite) the
     completed run it is meant to be compared against. Same argument applies to
-    `cf_curv` and `act_sens`: a different objective is a different run.
+    `cf_curv`, `act_sens` and the VICReg coefficients: a different objective is
+    a different run.
 
     Examples:
         (False, 0.0, True,  'features')      -> ''            (baseline, unchanged)
@@ -50,6 +52,8 @@ def variant_tag(sigreg, sigreg_coeff, freeze_backbone, curv_on,
         (True,  0.1, False, 'features', 1.0) -> '_sig1e-1_e2e_gp1e0'
         (True,  0.1, False, 'features', 1.0, 0.1, 0.1)
                                              -> '_sig1e-1_e2e_gp1e0_cf1e-1_as1e-1'
+        (False, 0.0, True, 'features', 0.0, 0.0, 0.0, True, 25.0, 1.0)
+                                             -> '_vic_s2e1_c1e0'
     """
     parts = []
     if truthy(sigreg):
@@ -81,4 +85,16 @@ def variant_tag(sigreg, sigreg_coeff, freeze_backbone, curv_on,
         ass = 0.0
     if ass > 0:
         parts.append(f"as{fmt_coeff(act_sens)}")
+    # VICReg part of "World Model + VICReg + SIGReg": only rename when the term
+    # actually contributes (flag on AND a positive coefficient).
+    try:
+        v_std = float(vcreg_std_coeff or 0)
+    except (TypeError, ValueError):
+        v_std = 0.0
+    try:
+        v_cov = float(vcreg_cov_coeff or 0)
+    except (TypeError, ValueError):
+        v_cov = 0.0
+    if truthy(vcreg) and (v_std > 0 or v_cov > 0):
+        parts.append(f"vic_s{fmt_coeff(v_std)}_c{fmt_coeff(v_cov)}")
     return ("_" + "_".join(parts)) if parts else ""

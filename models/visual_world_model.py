@@ -82,10 +82,19 @@ class VWorldModel(nn.Module):
         self.vcreg = bool(vcreg)
         self.std_coeff = float(vcreg_std_coeff)
         self.cov_coeff = float(vcreg_cov_coeff)
-        if vcreg_apply_to != "enc":
+        # VICReg (Bardes, Ponce & LeCun, ICLR 2022, arXiv:2105.04906) on the
+        # encoder latents. "enc" (default, historical) regularises visual+proprio
+        # channels; "visual" regularises exactly the visual tokens SIGReg sees,
+        # which is the "World Model + VICReg + SIGReg" combination: VICReg pins
+        # the second-order structure explicitly (per-dim variance hinge +
+        # pairwise covariance) while SIGReg pins the full distribution through
+        # the characteristic function. They are redundant-free, not conflicting.
+        if vcreg_apply_to not in ("enc", "visual"):
             raise ValueError(
-                f"Only encoder VCReg is supported, got vcreg_apply_to='{vcreg_apply_to}'."
+                f"vcreg_apply_to must be 'enc' or 'visual', got "
+                f"vcreg_apply_to='{vcreg_apply_to}'."
             )
+        self.vcreg_apply_to = vcreg_apply_to
 
         if isinstance(straighten, str):
             if straighten.startswith("aggcos"):
@@ -166,11 +175,22 @@ class VWorldModel(nn.Module):
                 "intended setting for the SIGReg variant."
             )
         log.info(
-            "VCReg enabled: %s, apply_to=enc, std_coeff=%s, cov_coeff=%s",
+            "VCReg enabled: %s, apply_to=%s, std_coeff=%s, cov_coeff=%s",
             self.vcreg,
+            self.vcreg_apply_to,
             self.std_coeff,
             self.cov_coeff,
         )
+        if self.vcreg and self.sigreg_enabled:
+            log.info(
+                "Combined objective active: World Model + VICReg (std=%s, cov=%s, "
+                "on %s) + SIGReg (coeff=%s). VICReg supplies explicit 2nd-order "
+                "regularisation; SIGReg supplies the full distributional match.",
+                self.std_coeff,
+                self.cov_coeff,
+                self.vcreg_apply_to,
+                self.sigreg_coeff,
+            )
 
         self.concat_dim = concat_dim # 0 or 1
         assert concat_dim == 0 or concat_dim == 1, f"concat_dim {concat_dim} not supported."
@@ -709,7 +729,13 @@ class VWorldModel(nn.Module):
             loss_components["z_proprio_loss"] = z_proprio_loss
 
             if self.vcreg:
-                z_vic_in = self.visual_prop(z)
+                # VICReg variance+covariance on the encoder latents. "visual"
+                # acts on the same tokens SIGReg regularises; "enc" (default)
+                # additionally covers the proprio channels.
+                if self.vcreg_apply_to == "visual":
+                    z_vic_in = self.visual_only(z)
+                else:
+                    z_vic_in = self.visual_prop(z)
                 z_std_loss = self.vcreg_std_loss(z_vic_in)
                 z_cov_loss = self.vcreg_cov_loss(z_vic_in)
                 z_reg_loss = z_std_loss * self.std_coeff + z_cov_loss * self.cov_coeff
