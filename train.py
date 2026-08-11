@@ -30,6 +30,25 @@ import custom_resolvers  # noqa: F401  # Registers OmegaConf resolvers at import
 warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)
 
+
+def _git_commit():
+    """Best-effort short commit hash for telemetry traceability.
+
+    Never raises: a missing git binary or a non-repo checkout must not break
+    training; the field then reads 'unknown'.
+    """
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        ).stdout.strip()
+        return out or "unknown"
+    except Exception:
+        return "unknown"
+
+
 class Trainer:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -190,6 +209,8 @@ class Trainer:
                 "vcreg_std_coeff": self.cfg.training.get("vcreg_std_coeff", 0),
                 "vcreg_cov_coeff": self.cfg.training.get("vcreg_cov_coeff", 0),
                 "vcreg_apply_to": self.cfg.training.get("vcreg_apply_to", "enc"),
+                "ground_proprio": self.cfg.training.get("ground_proprio", 0.0),
+                "git_commit": _git_commit(),
                 "stop_grad": self.cfg.training.get("stop_grad", True),
                 "freeze_backbone": self.cfg.training.get("freeze_backbone", True),
                 "encoder_lr": self.cfg.training.encoder_lr,

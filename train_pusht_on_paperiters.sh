@@ -26,6 +26,14 @@
 # Usage:
 #   bash train_pusht_on_paperiters.sh                     # detached, paper-exact
 #   bash train_pusht_on_paperiters.sh training.epochs=2   # any extra hydra override
+#
+# Comparability contract (PROGRESS_SIGREG_E2E.md / PROGRESS_VICREG.md): this is
+# the FROZEN-BASELINE arm. Every contract knob is passed EXPLICITLY below even
+# when it equals the yaml default, so the recorded command line alone defines
+# the baseline and a future default change can never silently alter it. The
+# end-to-end / VICReg arms live in train_pusht_e2e_sigreg.sh and
+# train_pusht_vicreg_sigreg.sh; each resolves to its own checkpoint folder via
+# run_naming.variant_tag, so arms can never auto-resume into each other.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -46,6 +54,8 @@ CKPT_BASE="${CKPT_BASE:-$PWD/checkpoints}"
 LOG="train_pusht_on_paperiters_$(date +%Y%m%d_%H%M%S).log"
 
 echo "DATASET_DIR            = ${DATASET_DIR}"
+echo "git commit             = $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "objective              = L_pred + 0.1*L_curv(agg)  [frozen baseline: sigreg/vcreg/grounding OFF]"
 echo "ckpt_base_path         = ${CKPT_BASE}"
 echo "training.max_iterations= ${MAX_ITERS}"
 echo "log                    = ${LOG}"
@@ -82,6 +92,15 @@ setsid nohup python train.py --config-name train.yaml \
   encoder=dino_channel \
   training.straighten=aggcos1e-1 \
   training.encoder_lr=1e-5 \
+  training.stop_grad=True \
+  training.freeze_backbone=True \
+  training.sigreg=False \
+  training.sigreg_coeff=0.0 \
+  training.vcreg=False \
+  training.vcreg_std_coeff=0 \
+  training.vcreg_cov_coeff=0 \
+  training.ground_proprio=0 \
+  training.backbone_lr=null \
   training.epochs=3 \
   training.max_iterations="${MAX_ITERS}" \
   env.num_workers=4 \
@@ -107,4 +126,9 @@ Expect the run to end with:
 
 Checkpoint lands in:
   ${CKPT_BASE}/test/pusht_aggmlpcos1e-1_agg32_projchannel_dim8_hw14_sgTrue_lr1e-05/checkpoints/model_latest.pth
+
+Read the run dir back from the log (never assume):
+  grep -m1 -oE "${CKPT_BASE}/test/[^ ]*" "${LOG}"
+Traceability: <run_dir>/telemetry/*.jsonl records the full config incl. the
+  git commit; summarize_training_log.py digests it.
 EOF

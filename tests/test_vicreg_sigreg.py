@@ -190,6 +190,81 @@ def test_non_collapsed_latents_pay_less_variance_than_collapsed():
     assert comp_good["z_vicreg_std_loss"].item() < comp_bad["z_vicreg_std_loss"].item()
 
 
+# ------------------------------------------------- VICReg paper fidelity
+# Cross-checks against Bardes et al. (ICLR 2022, arXiv:2105.04906), computed
+# through independent code paths (torch.std / torch.cov / whitening) rather
+# than the model's own algebra.
+def _whiten(x):
+    """Affinely transform (n, d) samples so their sample covariance is I."""
+    x = x - x.mean(0)
+    cov = torch.cov(x.T)
+    L = torch.linalg.cholesky(cov)
+    return x @ torch.linalg.inv(L).T
+
+
+def test_std_loss_matches_the_paper_formula():
+    """V(z) = (1/D) sum_i relu(1 - sqrt(Var(z_i) + eps)), eps = 1e-4."""
+    m = _model()
+    torch.manual_seed(5)
+    z = torch.randn(256, 8) * torch.tensor([0.2, 0.5, 1.0, 2.0, 0.3, 1.5, 0.8, 4.0])
+    std = z.std(dim=0)                       # independent path: torch.std
+    expected = torch.relu(1 - torch.sqrt(std.pow(2) + 1e-4)).mean()
+    torch.testing.assert_close(m.vcreg_std_loss(z), expected)
+
+
+def test_cov_loss_matches_the_paper_formula():
+    """C(z) = (1/D) sum_{i!=j} Cov(z)_ij^2, covariance with the n-1 divisor."""
+    m = _model()
+    torch.manual_seed(6)
+    a = torch.randn(256)
+    z = torch.stack([a, a + 0.5 * torch.randn(256), torch.randn(256),
+                     a - torch.randn(256)], dim=1)   # correlated dims
+    cov = torch.cov(z.T)                   # independent path: torch.cov
+    off = cov - torch.diag(torch.diagonal(cov))
+    expected = (off ** 2).sum() / z.shape[1]
+    torch.testing.assert_close(m.vcreg_cov_loss(z), expected, rtol=1e-5, atol=1e-6)
+    assert expected.item() > 0, "the probe tensor must actually be correlated"
+
+
+def test_both_losses_vanish_on_whitened_unit_variance_latents():
+    """Whitened latents have cov = I and std = 1: both VICReg terms must be ~0,
+    i.e. the regulariser's unique minimum is exactly the paper's target."""
+    m = _model()
+    torch.manual_seed(7)
+    z = _whiten(torch.randn(512, 8))
+    assert m.vcreg_cov_loss(z).item() == pytest.approx(0.0, abs=1e-6)
+    # std = 1 -> relu(1 - sqrt(1 + 1e-4)) = 0
+    assert m.vcreg_std_loss(z).item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_std_loss_ignores_dims_above_the_margin():
+    """The hinge is one-sided: dims with std >= 1 contribute nothing, so the
+    term cannot shrink an already-informative latent (paper property)."""
+    m = _model()
+    torch.manual_seed(8)
+    z = _whiten(torch.randn(512, 4)) * 3.0   # std = 3 on every dim
+    assert m.vcreg_std_loss(z).item() == 0.0
+
+
+def test_cov_loss_detects_correlation_and_whitening_removes_it():
+    m = _model()
+    torch.manual_seed(9)
+    a = torch.randn(512)
+    z = torch.stack([a, 2 * a, a + torch.randn(512) * 0.1, torch.randn(512)], dim=1)
+    assert m.vcreg_cov_loss(z).item() > 1.0, "strongly correlated dims must pay"
+    assert m.vcreg_cov_loss(_whiten(z)).item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_epsilon_guard_constant_input_is_finite_not_nan():
+    """With eps = 0 the sqrt would still be fine at var = 0, but the gradient
+    would blow up; the value must be relu(1 - sqrt(1e-4)) = 0.99."""
+    m = _model()
+    z = torch.ones(64, 8)
+    loss = m.vcreg_std_loss(z)
+    assert torch.isfinite(loss)
+    assert loss.item() == pytest.approx(0.99, abs=1e-5)
+
+
 # ------------------------------------------------------------ apply_to options
 def test_visual_and_enc_regularise_different_tensors():
     """With proprio channels present, 'enc' (visual+proprio) and 'visual' must
