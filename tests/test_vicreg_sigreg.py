@@ -195,11 +195,16 @@ def test_non_collapsed_latents_pay_less_variance_than_collapsed():
 # through independent code paths (torch.std / torch.cov / whitening) rather
 # than the model's own algebra.
 def _whiten(x):
-    """Affinely transform (n, d) samples so their sample covariance is I."""
-    x = x - x.mean(0)
+    """Affinely transform (n, d) samples so their sample covariance is I.
+
+    Computed in float64: this is the *reference* path, and a float32 whitening
+    of a correlated (ill-conditioned) covariance leaves cond(x)*eps_32 ~ 1e-3
+    error in the factors, i.e. a residual cov loss ~1e-6 that flips across
+    LAPACK builds. In float64 the residual is ~1e-12 on every platform."""
+    x = (x - x.mean(0)).double()
     cov = torch.cov(x.T)
     L = torch.linalg.cholesky(cov)
-    return x @ torch.linalg.inv(L).T
+    return (x @ torch.linalg.inv(L).T).float()
 
 
 def test_std_loss_matches_the_paper_formula():
