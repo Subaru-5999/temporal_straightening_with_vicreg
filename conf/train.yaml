@@ -1,0 +1,197 @@
+defaults:
+  - _self_
+  - env: point_maze
+  - encoder: dino 
+  - action_encoder: proprio
+  - proprio_encoder: proprio
+  - decoder: vqvae
+  - predictor: vit
+  # Single-GPU B200 pod (no SLURM): run jobs locally.
+  # For a SLURM cluster, switch this back to `submitit_slurm` and restore gres/qos/setup below.
+  - override hydra/launcher: submitit_local
+
+# base path to save model outputs. Checkpoints will be saved to ${ckpt_base_path}
+ckpt_base_path: ./checkpoints
+
+hydra:
+  # variant_tag is '' for the original defaults, so every pre-existing run
+  # directory stays byte-identical; only the new opt-in variants get a suffix
+  # (e.g. _sig1e-1_e2e).
+  run:
+    dir: ${ckpt_base_path}/test/${oc.select:env.save_name,${env.name}}_${replace_substring:${training.straighten},agg,agg${oc.select:encoder.agg_type,}}_agg32_proj${oc.select:encoder.projector,none}_dim${oc.select:encoder.projector_out_dim,384}_hw${oc.select:encoder.projector_target_hw,14}_sg${training.stop_grad}_lr${training.encoder_lr}${variant_tag:${training.sigreg},${training.sigreg_coeff},${training.freeze_backbone},${training.curv_on},${training.ground_proprio},${training.cf_curv},${training.act_sens}}
+  sweep:
+    dir: ${ckpt_base_path}/test/${oc.select:env.save_name,${env.name}}_${replace_substring:${training.straighten},agg,agg${oc.select:encoder.agg_type,}}_agg32_proj${oc.select:encoder.projector,none}_dim${oc.select:encoder.projector_out_dim,384}_hw${oc.select:encoder.projector_target_hw,14}_sg${training.stop_grad}_lr${training.encoder_lr}${variant_tag:${training.sigreg},${training.sigreg_coeff},${training.freeze_backbone},${training.curv_on},${training.ground_proprio},${training.cf_curv},${training.act_sens}}
+    subdir: ${hydra.job.num}
+  launcher:
+    submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+    nodes: 1
+    tasks_per_node: 1
+    gpus_per_node: 1
+    cpus_per_task: 8
+    mem_gb: 64
+    timeout_min: 2880
+
+training:
+  seed: 0
+  epochs: 20
+  # Hard cap on TOTAL optimizer steps for the run, counted across epochs and
+  # preserved across resumes. null = disabled (epochs alone decide = original
+  # behaviour). It never extends a run: `epochs` stays an upper bound, so raise
+  # `epochs` if the cap needs more passes than it allows.
+  # Use it to pin objective/architecture variants to an identical update budget.
+  # Paper-exact budgets (batch_size 32, num_hist 3, num_pred 1, frameskip 5):
+  #   PushT (pusht_noise, 18,685 rollouts): 61,929 iters/epoch x 2 epochs = 123,858
+  # The exact iters/epoch for any env is logged at startup as "Iteration budget:".
+  max_iterations: null
+  batch_size: 32 # should >= nodes * tasks_per_node
+  save_every_x_epoch: 1
+  save_every_x_iterations: 1000
+  straighten: False  # e.g. cos1e-2 or aggcos1e-2
+  # Where the curvature is measured, for the aggcos mode:
+  #   features (default) aggregate the tokens, then difference -- the original
+  #                      code path, and what the paper's Fig. "train_agg"
+  #                      caption describes ("applied to the aggregated features")
+  #   velocity           difference, then aggregate -- what App. B.6's equation
+  #                      C_t = cos(h(v_t), h(v_{t+1})) literally says
+  # These differ because the agg head is a nonlinear MLP. Ablation axis; state
+  # in the writeup which one was used.
+  curv_on: features
+  # ---- SIGReg: Sketched Isotropic Gaussian Regularization (LeJEPA / LeWM) ----
+  # The distributional anti-collapse term. Required to train the encoder
+  # end-to-end: the prediction loss alone is minimised by a constant encoder,
+  # and stop_grad does NOT prevent that (see experiments/verify_stop_grad.py).
+  # SIGReg pins the latent distribution (hence its scale); the curvature term
+  # pins the direction and is scale-invariant, so the two are complementary.
+  sigreg: False
+  sigreg_coeff: 0.0        # lambda_SIG. LeWM reference value: 0.1
+  sigreg_num_proj: 1024    # M random 1-D projections (LeWM: 1024)
+  sigreg_knots: 17         # quadrature nodes for the Epps-Pulley integral
+  sigreg_apply_to: agg     # agg (pooled trajectory repr) | patch (per-token)
+
+  # ---- proprio grounding: keep the agent IN the visual latent ----------------
+  # Coefficient of a linear read-out loss forcing the visual tokens alone to
+  # reproduce the proprio observation. 0.0 = off (default, every tracked run
+  # unchanged).
+  #
+  # Why it exists. On the PushT end-to-end + SIGReg run the visual latent stopped
+  # representing the agent/pusher (held-out probe R^2 0.943 -> -0.011) while
+  # keeping the block (0.945 -> 0.979). The information moved rather than
+  # vanishing: z's proprio channels hold the agent at R^2 0.997. The prediction
+  # loss is taken on the concatenated z, so the visual tokens are never required
+  # to encode what the proprio channels already supply, and dropping it lowers the
+  # loss. SIGReg constrains only the distribution, curvature only the direction.
+  # A frozen trunk cannot do this, which is why the baseline never showed it.
+  #
+  # It is fatal for planning and invisible in training metrics: in PushT the action
+  # IS the pusher target, so a visual-dominated cost cannot tell whether the pusher
+  # arrived. On that checkpoint GD and CEM both converge to exactly 0.26 while the
+  # ground-truth actions score 1.0 -- the optimiser is fine, the cost's optimum is
+  # in the wrong place. See PROGRESS_SIGREG_E2E.md.
+  ground_proprio: 0.0
+
+  # Which proprio dimensions to ground on. null = all of them.
+  # For PushT proprio is [agent_x, agent_y, vel_x, vel_y] and VELOCITY IS NOT
+  # IDENTIFIABLE FROM A SINGLE FRAME, so grounding on all four spends half the
+  # gradient on an ill-posed target. Measured at 8k steps with all four dims:
+  # the grounding loss plateaus near 0.23 rather than approaching 0, and
+  # straightness falls to cos 0.327 against 0.589 for the ungrounded run --
+  # forcing unpredictable high-frequency content into the latent is exactly what
+  # raises curvature. Use [0, 1] for PushT.
+  ground_proprio_dims: null
+
+  # ---- counterfactual geometry: the planner's degrees of freedom ------------
+  # The curvature term above only sees DATA trajectories. Planning optimises
+  # over counterfactual action sequences, and the Hessian of the planning cost
+  # splits into a first-order factor (dz_H/da)^T(dz_H/da) and a second-order
+  # term (z_H - z_g) . d^2z_H/da^2. Nothing else in the objective pins either
+  # for rollouts OFF the data distribution. These two terms do; 0.0 = off
+  # (default, every tracked run unchanged). See models/visual_world_model.py.
+  cf_curv: 0.0            # lambda_cf: straighten rollouts under WRONG actions
+  cf_H: 4                 # counterfactual rollout length in model steps (>= 2)
+  cf_mode: cos            # cos = cost space (raw tokens) | aggcos = agg head
+  act_sens: 0.0           # lambda_as: hinge on terminal-latent action response
+  act_sens_margin: 0.1    # required motion, as a fraction of the batch spread
+  cf_batch_frac: 0.5      # fraction of the batch the cf arms use (memory knob)
+
+  # Fine-tune the pretrained visual trunk (DINOv2). False = end-to-end JEPA.
+  # True (default) reproduces the original behaviour, where the trunk was frozen
+  # unconditionally regardless of model.train_encoder.
+  freeze_backbone: True
+  # Separate lr for the trunk. null -> single param group at encoder_lr, exactly
+  # as before. The paper's 1e-6/1e-5 was tuned for a projector over a frozen
+  # trunk and is not a sensible rate for fine-tuning a ViT.
+  backbone_lr: null
+  # Per-epoch latent collapse/straightness metrics on the first val batch.
+  log_diagnostics: True
+  # Also compute them every N TRAINING steps. val() alone gives one point per
+  # epoch, i.e. 2-3 points across a 123,858-step run, which is far too coarse to
+  # catch collapse while there is still time to react. 0 disables.
+  # Cost: one extra encoder forward every N steps (~0.5% at 500).
+  diag_every: 500
+  # ---- Bounded-memory training telemetry ----
+  # Appends one JSON record per telemetry_every steps to
+  # <run_dir>/telemetry/train_<timestamp>.jsonl, holding every loss term, the
+  # latent collapse metrics, per-module gradient/weight norms and their ratio,
+  # and measured weight movement. Memory is O(#metrics), not O(#steps): each
+  # metric is a Welford accumulator, and the only histories are capped deques.
+  # Disk: 123,858 steps / 200 = ~620 records, a few MB.
+  # Read it back with: python summarize_training_log.py <path>
+  telemetry: True
+  telemetry_every: 200
+  decoder_start_epoch: 1  # start optimizing decoder at this epoch
+  reconstruct_every_x_batch: 1000
+  num_reconstruct_samples: 5
+  encoder_lr: 1e-5
+  decoder_lr: 3e-4
+  predictor_lr: 5e-4
+  action_encoder_lr: 5e-4
+  stop_grad: True
+  vcreg: False
+  vcreg_apply_to: "enc"
+  vcreg_std_coeff: 0
+  vcreg_cov_coeff: 0
+  mixed_precision: bf16
+  # Resume from a specific checkpoint (absolute path to a model_<epoch>.pth).
+  # Leave null to auto-resume from model_latest.pth in this run's checkpoints/ folder.
+  # Resuming is fully offline: the encoder (incl. DINOv2 weights) is stored in the ckpt.
+  # Example: training.resume_from=/workspace/arun/.../checkpoints/model_10.pth
+  resume_from: null
+
+img_size: 224 # should be a multiple of 224
+frameskip: 5
+concat_dim: 1
+
+normalize_action: True
+
+# action encoder
+action_emb_dim: 10
+num_action_repeat: 1
+
+# proprio encoder
+proprio_emb_dim: 10 
+num_proprio_repeat: 1
+
+num_hist: 3
+num_pred: 1 # only supports 1
+has_predictor: True # set this to False for only training a decoder
+has_decoder: True # set this to False for only training a predictor
+
+model:
+  _target_: models.visual_world_model.VWorldModel
+  image_size: ${img_size}
+  num_hist: ${num_hist}
+  num_pred: ${num_pred}
+  train_encoder: True
+  train_predictor: True
+  train_decoder: True
+
+# Planning params for planning eval jobs launched during training
+plan_settings: 
+  # plan_cfg_path: conf/plan.yaml # set to null for no planning evals
+  plan_cfg_path: null 
+  planner: ['gd', 'cem']
+  goal_source: ['dset', 'random_state']
+  goal_H: [5]
+  alpha: [0.1, 1]
+
+debug: False 
