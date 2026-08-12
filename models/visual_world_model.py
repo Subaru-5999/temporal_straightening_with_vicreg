@@ -84,11 +84,15 @@ class VWorldModel(nn.Module):
         self.cov_coeff = float(vcreg_cov_coeff)
         # VICReg (Bardes, Ponce & LeCun, ICLR 2022, arXiv:2105.04906) on the
         # encoder latents. "enc" (default, historical) regularises visual+proprio
-        # channels; "visual" regularises exactly the visual tokens SIGReg sees,
-        # which is the "World Model + VICReg + SIGReg" combination: VICReg pins
-        # the second-order structure explicitly (per-dim variance hinge +
-        # pairwise covariance) while SIGReg pins the full distribution through
-        # the characteristic function. They are redundant-free, not conflicting.
+        # channels; "visual" regularises the raw visual token field (b,t,p,d),
+        # while SIGReg with sigreg_apply_to="agg" acts on the AGGREGATED latents
+        # -- the two terms therefore shape different objects: VICReg pins the
+        # token-field 2nd-order structure (per-dim variance hinge + pairwise
+        # covariance), SIGReg pins the aggregated trajectory distribution via
+        # the characteristic function. Arm-2 result (PROGRESS_VICREG.md ss5):
+        # at the paper anchors (25/1, D=8) the cov term dominates the objective
+        # once prediction converges and planning success regressed vs SIGReg
+        # alone; the pre-registered fallback is std=1, cov=0.04.
         if vcreg_apply_to not in ("enc", "visual"):
             raise ValueError(
                 f"vcreg_apply_to must be 'enc' or 'visual', got "

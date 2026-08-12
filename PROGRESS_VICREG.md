@@ -27,10 +27,11 @@ Division of labor: the prediction loss plays VICReg's invariance term; VICReg
 pins the second-order structure explicitly; SIGReg pins the full distribution
 through the characteristic function; curvature (when on) straightens latent
 trajectories. Implemented in `models/visual_world_model.py`
-(`vcreg_std_loss` / `vcreg_cov_loss`, `vcreg_apply_to="visual"` = VICReg acts on
-exactly the tokens SIGReg sees). Fidelity vs the official reference
-implementation is pinned by `tests/test_vicreg_sigreg.py` (independent
-`torch.std` / `torch.cov` / whitening cross-checks).
+(`vcreg_std_loss` / `vcreg_cov_loss`; `vcreg_apply_to="visual"` = VICReg acts on
+the raw visual token field, while SIGReg with `sigreg_apply_to="agg"` acts on
+the aggregated latents -- the two terms shape different objects). Fidelity vs
+the official reference implementation is pinned by `tests/test_vicreg_sigreg.py`
+(independent `torch.std` / `torch.cov` / whitening cross-checks).
 
 Hyperparameter anchors (zero free knobs beyond the two papers):
 
