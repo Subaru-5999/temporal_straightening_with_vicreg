@@ -53,7 +53,7 @@ read the folder back from the log; never assume it.**
 | # | arm | script | run folder under `checkpoints/test/` | budget | status |
 |---|---|---|---|---|---|
 | 1 | frozen baseline, straightening ✓ (paper cell) | `train_pusht_on_paperiters.sh` | `pusht_aggmlpcos1e-1_agg32_projchannel_dim8_hw14_sgTrue_lr1e-05` | 123,858 | **retrain queued** (old pod ckpt lost) |
-| 2 | VICReg + SIGReg, e2e | `train_pusht_vicreg_sigreg.sh` | `pusht_False_agg32_projchannel_dim8_hw14_sgFalse_lr1e-05_sig1e-1_e2e_vic_s2e1_c1e0` | 8k pilot -> 123,858 | queued |
+| 2 | VICReg + SIGReg, e2e | `train_pusht_vicreg_sigreg.sh` | `pusht_False_agg32_projchannel_dim8_hw14_sgFalse_lr1e-05_sig1e-1_e2e_vic_s2e1_c1e0` | 8k pilot -> 123,858 | **trained 2026-08-11/12 @ a9d08c1, eval queued** |
 | 3 | VICReg + SIGReg + grounding, e2e | same + `training.ground_proprio=1.0` | `..._sig1e-1_e2e_gp1e0_vic_s2e1_c1e0` | 123,858 | queued |
 | 4 | ablation VICReg-only | `SIGREG=0 bash train_pusht_vicreg_sigreg.sh` | `..._sgFalse_lr1e-05_e2e_vic_s2e1_c1e0` | pilot | optional |
 | 5 | ablation SIGReg-only | `VCREG=0 bash train_pusht_vicreg_sigreg.sh` | `..._sig1e-1_e2e` (exists from SIGReg phase) | done | see PROGRESS_SIGREG_E2E.md |
@@ -100,6 +100,22 @@ Eval protocol — identical for all arms, no exceptions: `reproduce_table1.py
 | e2e + SIGReg + grounding | 30.00 ± 7.21 | 40.00 ± 10.39 |
 
 VICReg arms must be compared against these at the identical protocol (§3).
+
+### Arm 2 training summary (123,858 steps, 13.88 h, B200 MIG, git a9d08c1)
+
+- `z_loss` 0.3125 -> 0.0018; decoder recon 0.128 -> 0.0015; still falling at the cap.
+- `sigreg_loss` 4.12 -> 1.098 (null floor 1.058); `z_vicreg_std_loss` ~1e-5 from
+  step 6k (hinge satisfied, no crushing); `z_vicreg_cov_loss` 0.154 -> 0.146 flat.
+- One transient spike at step 77,286 (std 15 sigma / cov 45 sigma of the window);
+  adjacent windows on trend, no action.
+- Collapse verdict OK: visual `probe_r2` 0.157 -> 0.339 (peak 0.494), eff-rank
+  frac 0.875, `latent_std` 0.26.
+- `agg_probe_r2` pinned at the -1 clamp for the whole run: held-out ridge probe
+  (64 train rows vs 128 agg dims) is underdetermined; agg path is not linearly
+  state-readable by construction and planning does not need it to be. Known
+  property of the agg bottleneck, not a VICReg regression.
+- Curvature without a straightening term: `agg_curvature_cos` -0.29 -> +0.30,
+  visual +0.43 — compare against the aggcos1e-1 baseline after its retrain.
 
 ## 6. Pod queue (strictly serial, one MIG slice)
 
