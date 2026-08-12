@@ -53,7 +53,7 @@ read the folder back from the log; never assume it.**
 | # | arm | script | run folder under `checkpoints/test/` | budget | status |
 |---|---|---|---|---|---|
 | 1 | frozen baseline, straightening ✓ (paper cell) | `train_pusht_on_paperiters.sh` | `pusht_aggmlpcos1e-1_agg32_projchannel_dim8_hw14_sgTrue_lr1e-05` | 123,858 | **retrain queued** (old pod ckpt lost) |
-| 2 | VICReg + SIGReg, e2e | `train_pusht_vicreg_sigreg.sh` | `pusht_False_agg32_projchannel_dim8_hw14_sgFalse_lr1e-05_sig1e-1_e2e_vic_s2e1_c1e0` | 8k pilot -> 123,858 | **trained 2026-08-11/12 @ a9d08c1, eval queued** |
+| 2 | VICReg + SIGReg, e2e | `train_pusht_vicreg_sigreg.sh` | `pusht_False_agg32_projchannel_dim8_hw14_sgFalse_lr1e-05_sig1e-1_e2e_vic_s2e1_c1e0` | 8k pilot -> 123,858 | **trained + eval done @ a9d08c1: OL 4.67 / MPC 25.33** |
 | 3 | VICReg + SIGReg + grounding, e2e | same + `training.ground_proprio=1.0` | `..._sig1e-1_e2e_gp1e0_vic_s2e1_c1e0` | 123,858 | queued |
 | 4 | ablation VICReg-only | `SIGREG=0 bash train_pusht_vicreg_sigreg.sh` | `..._sgFalse_lr1e-05_e2e_vic_s2e1_c1e0` | pilot | optional |
 | 5 | ablation SIGReg-only | `VCREG=0 bash train_pusht_vicreg_sigreg.sh` | `..._sig1e-1_e2e` (exists from SIGReg phase) | done | see PROGRESS_SIGREG_E2E.md |
@@ -98,6 +98,15 @@ Eval protocol — identical for all arms, no exceptions: `reproduce_table1.py
 | paper ✓ frozen baseline | 77.33 ± 6.18 | 85.33 ± 4.99 |
 | e2e + SIGReg (ungrounded) | 13.33 ± 1.15 | 44.67 ± 10.26 |
 | e2e + SIGReg + grounding | 30.00 ± 7.21 | 40.00 ± 10.39 |
+| **e2e + VICReg(25/1) + SIGReg (arm 2, 2026-08-12)** | **4.67 ± 1.15** | **25.33 ± 2.31** |
+
+Arm 2 eval detail: per-seed successes of 50 = OL 4/4/6, MPC 24/28/24; plan time
+gd 80.1 s, gd_mpc 1970.8 s (`results/<run>.json`, `.timing.json`). Adding
+VICReg at the paper anchors (std=25, cov=1 on visual tokens) *lowered* planning
+success versus e2e+SIGReg alone on both protocols; training itself was healthy
+(no collapse, SIGReg at its null floor), so the regression is geometric, not an
+optimisation failure. Candidate follow-ups: arm 3 (grounded), or the weaker
+VICReg fallback (`VCREG_STD=1 VCREG_COV=0.04`).
 
 VICReg arms must be compared against these at the identical protocol (§3).
 
