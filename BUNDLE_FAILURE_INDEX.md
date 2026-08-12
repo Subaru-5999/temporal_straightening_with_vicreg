@@ -1,9 +1,9 @@
 # VICReg Failure Bundle — Compilation Index
 
 **What this bundle is:** the complete, self-contained record of the
-*"World Model + VICReg + SIGReg"* (arm 2) experiment on PushT — all the code
-that produced the result, every recorded number, and the in-depth analysis of
-why the run failed at planning despite perfectly healthy training.
+*"World Model + VICReg + SIGReg"* (arm 2) experiment on PushT — the **entire
+repository code tree, file-for-file** (see `MANIFEST.md` for the exhaustive
+172-file list), together with the failure analysis and every recorded result.
 
 **Headline:** training converged beautifully (123,858 steps, no collapse, probe
 R² rising) and then the model planned *worse* than the weaker baseline:
@@ -22,6 +22,7 @@ coefficient-regime + geometry-overwrite problem, documented in depth below.
 | 3 | `PROGRESS_SIGREG_E2E.md` | full history of the SIGReg e2e arms whose numbers serve as the comparison references (13.33/44.67 and 30/40 grounded) |
 | 4 | `REPRODUCTION.md` + `POD_SETUP_LOG.md` | exact protocol: pod B200 setup, data layout, training/eval reproduction rules |
 | 5 | `SHORT_BUDGET_PILOTS.md` | pilot-first methodology this program follows (1h pilots gate full budgets) |
+| 6 | `MANIFEST.md` | exhaustive file-by-file manifest of everything in this bundle, with sizes — proof the full code tree is included |
 
 ## 2. All results obtained
 
